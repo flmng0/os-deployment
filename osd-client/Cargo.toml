@@ -1,0 +1,8 @@
+[package]
+name = "osd-client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nwd = { version = "1.0.5", package = "native-windows-derive" }
+nwg = { version = "1.0.13", package = "native-windows-gui" }

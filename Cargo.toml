@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "osd-client",
+    "osd-core",
+]
+
+resolver = "2"

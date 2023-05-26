@@ -2,6 +2,23 @@ use std::net::Ipv4Addr;
 
 use serde::{Deserialize, Serialize};
 
+pub const SERVER_IP: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
+pub const SERVER_PORT: u16 = 4056;
+
+#[derive(Serialize, Deserialize)]
+pub enum ClientMessage {
+    // "I'm ready to be built!"
+    Advertise(DeviceInfo),
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum ServerMessage {
+    // "I've received your connection, this is your ID."
+    ConnectionSuccess(u32),
+    // "A user has requested to rebuild you, you can start now!"
+    StartBuilding,
+}
+
 #[derive(Deserialize)]
 pub struct ServerConfig {
     pub address: Ipv4Addr,
@@ -13,10 +30,10 @@ pub struct Config {
     pub server: ServerConfig,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Default)]
 pub struct DeviceInfo {
     pub hostname: Option<String>,
-    pub mac_address: Option<Mac>,
+    pub mac_address: Mac,
 }
 
 #[derive(Deserialize, Serialize, Default)]

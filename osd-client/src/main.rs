@@ -1,20 +1,16 @@
-#[cfg(target_os = "windows")]
-mod device_windows;
-#[cfg(target_os = "windows")]
-use device_windows as device;
+mod advertise;
+mod device;
 
-#[cfg(not(target_os = "windows"))]
-mod device_other;
-#[cfg(not(target_os = "windows"))]
-use device_other as device;
+use std::{cell::RefCell, sync::mpsc, thread};
+
+use advertise::{StatusEvent, advertise};
 
 use nwd::NwgUi;
 use nwg::NativeUi;
-use osd_core::Mac;
+use osd_core::{Mac, ServerMessage, DeviceInfo};
 
 fn main() {
     let is_wine = std::env::vars().any(|(key, _)| key == "WINELOADER");
-    dbg!(is_wine);
 
     nwg::init().expect("Failed to initialize Native Windows GUI");
     nwg::Font::set_global_family("Segoe UI").expect("Failed to set default font");
@@ -27,9 +23,15 @@ fn main() {
         maybe_mac_address.expect("Failed to get local MAC address")
     };
 
-    let init = OsdClientApp {
+    let asset_id = device::generate_asset_id();
+
+    let device_info = DeviceInfo {
         mac_address,
-        hostname: None,
+        hostname: asset_id,
+    };
+
+    let init = OsdClientApp {
+        device_info,
         ..Default::default()
     };
     let _app = OsdClientApp::build_ui(init).expect("Failed to build UI");
@@ -43,7 +45,7 @@ const LABEL_H: i32 = 24;
 const LABEL_SIZE: (i32, i32) = (LABEL_W, LABEL_H);
 
 const TEXT_INPUT_X: i32 = 132;
-const TEXT_INPUT_W: i32 = 152;
+const TEXT_INPUT_W: i32 = 202;
 const TEXT_INPUT_H: i32 = 24;
 const TEXT_INPUT_SIZE: (i32, i32) = (TEXT_INPUT_W, TEXT_INPUT_H);
 
@@ -52,15 +54,21 @@ const ROW_B_Y: i32 = 54;
 
 #[derive(Default, NwgUi)]
 pub struct OsdClientApp {
-    mac_address: Mac,
-    hostname: Option<String>,
+    device_info: DeviceInfo,
 
-    #[nwg_control(size: (300, 130), title: "Mass OS Deployment Advertiser")]
+    status_event_receiver: RefCell<Option<mpsc::Receiver<StatusEvent>>>,
+    close_sender: RefCell<Option<mpsc::Sender<()>>>,
+
+    #[nwg_control(size: (350, 140), title: "Mass OS Deployment Advertiser", flags: "WINDOW|VISIBLE")]
     #[nwg_events( 
         OnInit: [OsdClientApp::on_init],
-        OnWindowClose: [OsdClientApp::on_close] 
+        OnWindowClose: [OsdClientApp::on_close(SELF, EVT_DATA)] 
     )]
     window: nwg::Window,
+
+    #[nwg_control]
+    #[nwg_events( OnNotice: [OsdClientApp::handle_status_event] )]
+    status_notice: nwg::Notice,
 
     #[nwg_control(text: "MAC Address:", position: (LABEL_X, ROW_A_Y), size: LABEL_SIZE)]
     l1: nwg::Label,
@@ -84,15 +92,41 @@ pub struct OsdClientApp {
     )]
     hostname_text: nwg::TextInput,
 
-    #[nwg_control(text: "Exit Now", size: (100, 30), position: (190, 95))]
-    #[nwg_events( OnButtonClick: [OsdClientApp::quit_button_pressed] )]
-    quit: nwg::Button,
+    #[nwg_control(
+        text: "Initializing...",
+    )]
+    status_bar: nwg::StatusBar,
+
+    #[nwg_control(parent: status_bar, flags: "MARQUEE", marquee: true)]
+    progress_bar: nwg::ProgressBar,
 }
 
 impl OsdClientApp {
     fn on_init(&self) {
-        self.mac_text.set_text(&self.mac_address.0);
-        self.set_hostname(self.hostname.clone());
+        self.mac_text.set_text(&self.device_info.mac_address.0);
+        self.set_hostname(self.device_info.hostname.clone());
+
+        let notice_sender = self.status_notice.sender();
+
+        let (close_tx, close_rx) = mpsc::channel();
+        *self.close_sender.borrow_mut() = Some(close_tx);
+
+        *self.status_event_receiver.borrow_mut() = Some(advertise(&self.device_info, notice_sender, close_rx));
+    }
+
+    fn handle_status_event(&self) {
+        let mut receiver_ref = self.status_event_receiver.borrow_mut();
+
+        let id = thread::current().id();
+
+        let Some(receiver) = receiver_ref.as_mut() else { return };
+
+        let Ok(status) = receiver.recv() else { unreachable!() };
+        self.set_status(&status.message);
+    }
+
+    fn set_status(&self, text: &str) {
+        self.status_bar.set_text(0, &format!("{text}..."));
     }
 
     fn set_hostname(&self, hostname: Option<String>) {
@@ -105,11 +139,29 @@ impl OsdClientApp {
         }
     }
 
-    fn on_close(&self) {
-        nwg::stop_thread_dispatch();
-    }
+    fn on_close(&self, data: &nwg::EventData) {
+        let nwg::EventData::OnWindowClose(close_data) = data else { unreachable!() };
 
-    fn quit_button_pressed(&self) {
-        println!("Quit button pressed!");
+        let params = nwg::MessageParams {
+            title: "Are you sure?",
+            content: r#"The application will automatically continue when selected from the interface.
+
+Rebuilding will not work correctly unless this device has been properly added to Configuration Manager.
+
+Are you sure you want to exit?
+            "#,
+            buttons: nwg::MessageButtons::YesNo,
+            icons: nwg::MessageIcons::Question,
+        };
+
+        let response = nwg::modal_message(&self.window, &params);
+
+        let should_close = matches!(response, nwg::MessageChoice::Yes);
+
+        close_data.close(should_close);
+
+        if should_close {
+            nwg::stop_thread_dispatch();
+        }
     }
 }

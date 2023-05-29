@@ -2,10 +2,13 @@
 members = [
     "osd-client",
     "osd-core",
+    "osd-server",
 ]
 
 resolver = "2"
 
 [workspace.dependencies]
+async-std = { version = "1.12.0" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "1.0"
+bson = "2.6.1"

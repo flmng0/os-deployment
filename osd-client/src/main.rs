@@ -1,10 +1,11 @@
 mod advertise;
 mod device;
 
-use std::{cell::RefCell, sync::mpsc, thread};
+use std::{cell::RefCell, sync::mpsc, thread, time::Duration};
 
 use advertise::{StatusEvent, advertise};
 
+use async_std::{task::{JoinHandle, block_on, self}, channel, future::timeout};
 use nwd::NwgUi;
 use nwg::NativeUi;
 use osd_core::{Mac, ServerMessage, DeviceInfo};
@@ -56,8 +57,8 @@ const ROW_B_Y: i32 = 54;
 pub struct OsdClientApp {
     device_info: DeviceInfo,
 
-    status_event_receiver: RefCell<Option<mpsc::Receiver<StatusEvent>>>,
-    close_sender: RefCell<Option<mpsc::Sender<()>>>,
+    advertise_handle: RefCell<Option<JoinHandle<()>>>,
+    status_event_receiver: RefCell<Option<channel::Receiver<StatusEvent>>>,
 
     #[nwg_control(size: (350, 140), title: "Mass OS Deployment Advertiser", flags: "WINDOW|VISIBLE")]
     #[nwg_events( 
@@ -108,21 +109,22 @@ impl OsdClientApp {
 
         let notice_sender = self.status_notice.sender();
 
-        let (close_tx, close_rx) = mpsc::channel();
-        *self.close_sender.borrow_mut() = Some(close_tx);
+        let (advertise_rx, advertise_handle) = advertise(&self.device_info, notice_sender);
 
-        *self.status_event_receiver.borrow_mut() = Some(advertise(&self.device_info, notice_sender, close_rx));
+        *self.status_event_receiver.borrow_mut() = Some(advertise_rx);
+        *self.advertise_handle.borrow_mut() = Some(advertise_handle);
     }
 
     fn handle_status_event(&self) {
-        let mut receiver_ref = self.status_event_receiver.borrow_mut();
+        task::block_on(async {
+            let mut receiver_ref = self.status_event_receiver.borrow_mut();
 
-        let id = thread::current().id();
+            let Some(receiver) = receiver_ref.as_mut() else { unreachable!() };
 
-        let Some(receiver) = receiver_ref.as_mut() else { return };
+            let Ok(status) = receiver.recv().await else { unreachable!() };
 
-        let Ok(status) = receiver.recv() else { unreachable!() };
-        self.set_status(&status.message);
+            self.set_status(&status.message);
+        })
     }
 
     fn set_status(&self, text: &str) {
@@ -161,7 +163,26 @@ Are you sure you want to exit?
         close_data.close(should_close);
 
         if should_close {
-            nwg::stop_thread_dispatch();
+            self.close();
         }
+    }
+
+    fn close(&self) {
+        self.set_status("Waiting for advertising thread to cancel");
+
+        self.window.set_enabled(false);
+
+        let mut handle_ref =  self.advertise_handle.borrow_mut();
+
+        if let Some(handle) = handle_ref.as_mut() {
+            let timeout_dur = Duration::from_secs(10);
+            let with_timeout = timeout(timeout_dur, handle.cancel());
+            block_on(with_timeout);
+        }
+
+        *handle_ref = None;
+
+        nwg::stop_thread_dispatch();
+
     }
 }

@@ -10,5 +10,7 @@ nwd = { version = "1.0.5", package = "native-windows-derive" }
 nwg = { version = "1.0.13", package = "native-windows-gui" }
 wmi = "0.13.0"
 
+async-std = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+bson = { workspace = true }
